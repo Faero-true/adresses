@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Поиск адресов и экспорт в Excel</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    #map { width: 100%; height: 300px; margin-bottom: 20px; }
+    .input-group { margin-bottom: 10px; display: flex; align-items: center; }
+    .input-group label { margin-right: 10px; }
+    .input-group input { padding: 5px; width: 150px; }
+    .input-group select { margin-left: 10px; padding: 5px; }
+    button { padding: 5px 10px; margin-top: 10px; }
+    #result { margin-top: 20px; }
+    #result ul { list-style: none; padding-left: 0; }
+    #loading { display: none; margin-top: 10px; }
+    #exportBtn { display: none; margin-bottom: 10px; }
+  </style>
+  <!-- Подключение Яндекс.Карт -->
+  <script src="https://api-maps.yandex.ru/2.1/?lang=ru_RU" type="text/javascript"></script>
+  <!-- Подключение библиотеки SheetJS для экспорта в Excel -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+  <h1>Поиск адресов и экспорт в Excel</h1>
+  
+  <!-- Карта Яндекс -->
+  <div id="map"></div>
+  
+  <!-- Форма ввода координат -->
+  <form id="addressForm">
+    <div class="input-group">
+      <label for="latitude">Широта:</label>
+      <input type="number" id="latitude" step="any" required>
+      <select id="latDirection">
+        <option value="N">N (северная)</option>
+        <option value="S">S (южная)</option>
+      </select>
+    </div>
+    
+    <div class="input-group">
+      <label for="longitude">Долгота:</label>
+      <input type="number" id="longitude" step="any" required>
+      <select id="lonDirection">
+        <option value="E">E (восточная)</option>
+        <option value="W">W (западная)</option>
+      </select>
+    </div>
+    
+    <button type="submit">Найти адреса</button>
+  </form>
+  
+  <!-- Кнопка экспорта в Excel -->
+  <button id="exportBtn">Экспорт в Excel</button>
+  
+  <!-- Индикатор загрузки -->
+  <div id="loading">Идет загрузка...</div>
+  
+  <!-- Блок для вывода адресов -->
+  <div id="result"></div>
+  
+  <script>
+    let addressesData = []; // Массив для хранения найденных адресов (для экспорта)
+
+    // Инициализация Яндекс.Карт
+    ymaps.ready(initMap);
+    function initMap() {
+      var myMap = new ymaps.Map("map", {
+          center: [55.76, 37.64], // Центр карты (Московский регион)
+          zoom: 10
+      });
+      
+      // Обработка клика по карте
+      myMap.events.add('click', function (e) {
+          var coords = e.get('coords');
+          // Определение направления по координатам и установка абсолютного значения
+          const lat = parseFloat(coords[0].toFixed(6));
+          const lon = parseFloat(coords[1].toFixed(6));
+          
+          // Обновляем поле для широты
+          document.getElementById('latitude').value = Math.abs(lat);
+          document.getElementById('latDirection').value = (lat >= 0) ? 'N' : 'S';
+          
+          // Обновляем поле для долготы
+          document.getElementById('longitude').value = Math.abs(lon);
+          document.getElementById('lonDirection').value = (lon >= 0) ? 'E' : 'W';
+      });
+    }
+    
+    document.getElementById('addressForm').addEventListener('submit', function(event) {
+      event.preventDefault();
+      
+      const latInput = parseFloat(document.getElementById('latitude').value);
+      const lonInput = parseFloat(document.getElementById('longitude').value);
+      const latDir = document.getElementById('latDirection').value;
+      const lonDir = document.getElementById('lonDirection').value;
+      
+      // Преобразование введенных значений в корректные координаты
+      const latitude = (latDir === "S") ? -Math.abs(latInput) : Math.abs(latInput);
+      const longitude = (lonDir === "W") ? -Math.abs(lonInput) : Math.abs(lonInput);
+      
+      const radius = 1000; // радиус в метрах
+      
+      // Показать индикатор загрузки
+      const loadingDiv = document.getElementById('loading');
+      loadingDiv.style.display = "block";
+      
+      // Скрываем кнопку экспорта до получения результатов
+      document.getElementById('exportBtn').style.display = "none";
+      
+      // Формирование запроса Overpass QL
+      const query = `
+        [out:json];
+        (
+          node(around:${radius},${latitude},${longitude})["addr:housenumber"];
+          way(around:${radius},${latitude},${longitude})["addr:housenumber"];
+          relation(around:${radius},${latitude},${longitude})["addr:housenumber"];
+        );
+        out center;
+      `;
+      
+      // URL Overpass API
+      const url = "https://overpass-api.de/api/interpreter";
+      
+      fetch(url, {
+        method: "POST",
+        body: query,
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
+        }
+      })
+      .then(response => response.json())
+      .then(data => {
+        loadingDiv.style.display = "none"; // скрыть индикатор загрузки
+        const resultDiv = document.getElementById('result');
+        resultDiv.innerHTML = "<h2>Найденные адреса:</h2>";
+        addressesData = []; // очистка массива перед новым поиском
+        
+        if (data.elements.length === 0) {
+          resultDiv.innerHTML += "<p>Адреса не найдены.</p>";
+          return;
+        }
+        
+        // Создаем список найденных адресов с нумерацией
+        const list = document.createElement('ul');
+        data.elements.forEach((element, index) => {
+          let address = "";
+          if (element.tags) {
+            address = [
+              element.tags["addr:street"],
+              element.tags["addr:housenumber"],
+              element.tags["addr:city"],
+              element.tags["addr:postcode"]
+            ].filter(Boolean).join(", ");
+          }
+          if (!address) address = "Нет данных по адресу";
+          
+          // Добавляем адрес в массив для экспорта
+          addressesData.push({ id: index + 1, address: address });
+          
+          const item = document.createElement('li');
+          item.textContent = `${index + 1}. ${address}`;
+          list.appendChild(item);
+        });
+        resultDiv.appendChild(list);
+        
+        // Показать кнопку экспорта, если найдены адреса
+        document.getElementById('exportBtn').style.display = "inline-block";
+      })
+      .catch(error => {
+        loadingDiv.style.display = "none"; // скрыть индикатор загрузки в случае ошибки
+        console.error("Ошибка при выполнении запроса:", error);
+        document.getElementById('result').innerHTML = "<p>Произошла ошибка при выполнении запроса.</p>";
+      });
+    });
+    
+    // Экспорт данных в Excel (.xlsx)
+    document.getElementById('exportBtn').addEventListener('click', function() {
+      if (addressesData.length === 0) return;
+      
+      // Создаем новый workbook и worksheet
+      const wb = XLSX.utils.book_new();
+      const ws_data = [
+        ["Id", "Адрес"]
+      ];
+      
+      addressesData.forEach(item => {
+        ws_data.push([item.id, item.address]);
+      });
+      
+      const ws = XLSX.utils.aoa_to_sheet(ws_data);
+      XLSX.utils.book_append_sheet(wb, ws, "Адреса");
+      
+      // Генерация файла и триггер скачивания
+      XLSX.writeFile(wb, "addresses.xlsx");
+    });
+  </script>
+</body>
+</html>
